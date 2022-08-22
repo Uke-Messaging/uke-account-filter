@@ -2,20 +2,13 @@
 
 use ink_lang as ink;
 
-/// TODO prolly add a custom data struct or enum for blocked allowed i nthe same list, so it wouldbe a single mapping filters: Mapping<AccountId, Vec<Filter>>
-/// and Filter would be something like a struct Filter { id, blockedorallowed }
-/// For now, we can just use separate lists tho
-
 #[ink::contract]
 mod uke_account_filter {
 
     use ink_prelude::vec::Vec;
-    /// Defines the storage of your contract.
-    /// Add new fields to the below struct in order
-    /// to add new static storage fields to your contract.
     use ink_storage::{traits::SpreadAllocate, Mapping};
 
-    /// Emitted whenever a new user is registered.
+    /// Emitted whenever a new user changes their opt-in status.
     #[ink(event)]
     pub struct OptIn {
         #[ink(topic)]
@@ -24,14 +17,25 @@ mod uke_account_filter {
         status: bool,
     }
 
+    /// Uke Account Filters ink! Smart Contract.  
+    /// Used for defining rules related to accounts that message using the uke protocol.
+    ///
+    /// # Description
+    ///
+    /// Users can define rules for whether they wish to be contacted or not, and who can contact them.
+    /// They essentially can create whitelists to explicitly allow who is permitted to message that specific account,
+    /// along with what data can be sent in the future.
+    /// This measure prevents a common issue with phone numbers, email, and even other apps - spam.
+    /// This contract ensures the rules are kept in place, and the user is safe from any malicious or unwanted messages.
+
     #[ink(storage)]
     #[derive(SpreadAllocate)]
     pub struct UkeAccountFilter {
-        /// Ensures it is a registered account id.
+        /// Creates a mapping of whether an account is opted in or not.
         opted_in: Mapping<AccountId, bool>,
-        /// If true, it allows all messages.  if false, all messages are deemed as invalid.
+        /// If true, it allows all messages.  if false, all messages are deemed as invalid (except those in the whitelist).
         global_filter: Mapping<AccountId, bool>,
-        /// Creates a mapping of accounts with privilege to message
+        /// Creates a mapping of accounts with privilege to message (whitelist).
         allowed_accounts: Mapping<AccountId, Vec<AccountId>>,
         /// Default contract address
         default_address: AccountId,
@@ -41,7 +45,7 @@ mod uke_account_filter {
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(::scale_info::TypeInfo))]
     pub enum Error {
-        /// Returned if the user is not opted in to be filtered
+        /// Returned if the user is not opted in to interact with filters.
         NotOptedIn,
         /// Returned if caller is not owner while required to.
         CallerIsNotOwner,
@@ -51,7 +55,7 @@ mod uke_account_filter {
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl UkeAccountFilter {
-        /// Constructor that initializes the `bool` value to the given `init_value`.
+        /// Creates a new account filter contract
         #[ink(constructor)]
         pub fn new() -> Self {
             ink_lang::utils::initialize_contract(|contract: &mut Self| {
@@ -59,13 +63,13 @@ mod uke_account_filter {
             })
         }
 
-        /// Gets the optin status
+        /// Gets the opt-in status of a selected account.
         #[ink(message)]
         pub fn get_optin_status(&self, id: AccountId) -> bool {
             self.get_optin_status_or_default(id)
         }
 
-        /// Changes optin status
+        /// Changes opt-in status of the selected account.
         #[ink(message)]
         pub fn change_optin_status(&mut self, status: bool, id: AccountId) -> Result<()> {
             if !self.is_caller_owner(id) {
@@ -77,39 +81,47 @@ mod uke_account_filter {
             Ok(())
         }
 
-        /// Toggles global filter for account
+        /// Changes global filter for the selected account.
         #[ink(message)]
         pub fn change_global_filter(&mut self, id: AccountId, status: bool) -> Result<()> {
             if !self.is_caller_owner(id) {
                 return Err(Error::CallerIsNotOwner);
+            } else if !self.get_optin_status_or_default(id) {
+                return Err(Error::NotOptedIn);
             }
+
             self.global_filter.insert(&id, &status);
             Ok(())
         }
 
-        /// Gets the global status status
+        /// Gets the global filter status of the selected account.
         #[ink(message)]
         pub fn get_global_filter(&self, id: AccountId) -> bool {
             self.get_global_status_or_default(id)
         }
 
-        /// Privileged access to contact the user
+        /// Adds a new user to the whitelist.
         #[ink(message)]
         pub fn add_to_allowed(&mut self, id: AccountId, id_to_add: AccountId) -> Result<()> {
             if !self.is_caller_owner(id) {
                 return Err(Error::CallerIsNotOwner);
+            } else if !self.get_optin_status_or_default(id) {
+                return Err(Error::NotOptedIn);
             }
+
             let mut vec = self.get_allowed_list_or_default(id);
             vec.push(id_to_add);
             self.allowed_accounts.insert(&id, &vec);
             Ok(())
         }
 
-        /// Gets account whitelist
+        /// Gets account whitelist.
         #[ink(message)]
         pub fn get_allowed_accounts(&self, id: AccountId) -> Vec<AccountId> {
             self.get_allowed_list_or_default(id)
         }
+
+        // Utility functions to ensure safe retrieval of various mappings.
 
         fn get_optin_status_or_default(&self, id: AccountId) -> bool {
             self.opted_in.get(&id).unwrap_or(false)
@@ -128,15 +140,10 @@ mod uke_account_filter {
         }
     }
 
-    /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
-    /// module and test functions are marked with a `#[test]` attribute.
-    /// The below code is technically just normal Rust code.
     #[cfg(test)]
     mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
 
-        /// Imports `ink_lang` so we can use `#[ink::test]`.
+        use super::*;
         use ink_lang as ink;
 
         fn set_next_caller(caller: AccountId) {
@@ -159,6 +166,11 @@ mod uke_account_filter {
             set_next_caller(default_accounts.alice);
 
             let mut contract = UkeAccountFilter::new();
+
+            assert_eq!(
+                contract.add_to_allowed(default_accounts.alice, default_accounts.bob),
+                Err(Error::NotOptedIn)
+            );
 
             assert_eq!(
                 contract.change_optin_status(true, default_accounts.alice),
@@ -191,6 +203,15 @@ mod uke_account_filter {
 
             assert_eq!(
                 contract.change_global_filter(default_accounts.alice, true),
+                Err(Error::NotOptedIn)
+            );
+
+            contract
+                .change_optin_status(true, default_accounts.alice)
+                .unwrap();
+
+            assert_eq!(
+                contract.change_global_filter(default_accounts.alice, true),
                 Ok(())
             );
 
@@ -206,6 +227,11 @@ mod uke_account_filter {
             set_next_caller(default_accounts.alice);
 
             let mut contract = UkeAccountFilter::new();
+
+            contract
+                .change_optin_status(true, default_accounts.alice)
+                .unwrap();
+
             contract
                 .change_global_filter(default_accounts.alice, true)
                 .unwrap();
@@ -221,6 +247,15 @@ mod uke_account_filter {
 
             assert_eq!(
                 contract.add_to_allowed(default_accounts.alice, default_accounts.bob),
+                Err(Error::NotOptedIn)
+            );
+
+            contract
+                .change_optin_status(true, default_accounts.alice)
+                .unwrap();
+
+            assert_eq!(
+                contract.add_to_allowed(default_accounts.alice, default_accounts.bob),
                 Ok(())
             );
         }
@@ -231,6 +266,11 @@ mod uke_account_filter {
             set_next_caller(default_accounts.alice);
 
             let mut contract = UkeAccountFilter::new();
+
+            contract
+                .change_optin_status(true, default_accounts.alice)
+                .unwrap();
+
             contract
                 .add_to_allowed(default_accounts.alice, default_accounts.bob)
                 .unwrap();
